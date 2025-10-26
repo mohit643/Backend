@@ -30,10 +30,10 @@ app.add_middleware(
 # Import routers
 from app.api.routes import products, orders, contact, delivery, payments, whatsapp
 
-# Include Routers - CORRECT PREFIX
+# Include Routers - ✅ FIXED
 app.include_router(orders.router, prefix="/api/orders", tags=["Orders"])
 app.include_router(products.router, prefix="/api/products", tags=["Products"])
-app.include_router(delivery.router, prefix="/api/delivery", tags=["Delivery"])
+app.include_router(delivery.router, prefix="/api")  # ✅ Only /api prefix (delivery prefix is in router)
 app.include_router(payments.router, prefix="/api/payments", tags=["Payments"])
 app.include_router(whatsapp.router, prefix="/api/whatsapp", tags=["WhatsApp"])
 app.include_router(contact.router, prefix="/api/contact", tags=["Contact"])
@@ -68,13 +68,21 @@ async def api_info():
         }
     }
 
-# Startup event
+# Startup event - ✅ ADDED ROUTE PRINTING
 @app.on_event("startup")
 async def startup_event():
     print("=" * 60)
     print("🚀 Pure & Desi API Starting...")
     print("=" * 60)
-    print("✅ Server is ready!")
+    
+    # Print all registered routes
+    print("\n📋 Registered Routes:")
+    for route in app.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            methods = ', '.join(route.methods)
+            print(f"  {methods:8} {route.path}")
+    
+    print("\n✅ Server is ready!")
     print("📖 API Docs: http://localhost:8000/docs")
     print("🔗 API Base: http://localhost:8000/api")
     print("=" * 60)

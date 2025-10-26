@@ -1,5 +1,4 @@
-# backend/app/api/routes/delivery.py (REPLACE COMPLETE FILE)
-
+# backend/app/api/routes/delivery.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -10,11 +9,13 @@ import traceback
 from app.database.connection import get_db
 from app.models.order import Order
 from app.models.delivery import Delivery
+from app.services.shiprocket_service import shiprocket_service
 
+# ✅ PREFIX ADDED HERE
 router = APIRouter(prefix="/delivery", tags=["Delivery"])
 
 # ============================================
-# PYDANTIC SCHEMAS (Define Here)
+# PYDANTIC SCHEMAS
 # ============================================
 
 class DeliveryTrackingResponse(BaseModel):
@@ -45,8 +46,145 @@ class ShippingCalculation(BaseModel):
     weight: float
     cod_amount: Optional[float] = 0
 
-# Metro city pincodes (first 3 digits)
-METRO_CITIES = ["110", "400", "560", "600", "700", "500", "122", "201"]
+# ============================================
+# PINCODE & SHIPPING ROUTES (SHIPROCKET)
+# ============================================
+
+# backend/app/api/routes/delivery.py
+
+@router.get("/check-pincode/{pincode}")
+async def check_pincode_serviceability(pincode: str):
+    """Check if Shiprocket delivery is available for pincode"""
+    try:
+        print(f"\n{'='*60}")
+        print(f"🔍 PINCODE CHECK API CALLED")
+        print(f"📍 Pincode: {pincode}")
+        print(f"{'='*60}\n")
+        
+        # Basic validation
+        if len(pincode) != 6 or not pincode.isdigit():
+            print(f"❌ Invalid pincode format: {pincode}")
+            raise HTTPException(status_code=400, detail="Invalid pincode format")
+        
+        # Check serviceability via Shiprocket
+        print(f"📡 Calling Shiprocket service...")
+        result = shiprocket_service.check_pincode_serviceability(pincode)
+        
+        print(f"✅ Shiprocket response: {result}")
+        
+        # ✅ ENSURE CITY AND STATE ARE PRESENT
+        response = {
+            "serviceable": result.get("serviceable", True),
+            "pincode": pincode,
+            "city": result.get("city", ""),  # Will be filled by mock or real API
+            "state": result.get("state", ""),  # Will be filled by mock or real API
+            "cod_available": result.get("cod_available", True),
+            "prepaid_available": True,
+            "estimated_days": result.get("estimated_days", "3-5 days"),
+            "shipping_charge": result.get("shipping_charge", 50),
+            "courier_name": result.get("courier_name", "Shiprocket")
+        }
+        
+        # ✅ FALLBACK: If still unknown, use basic inference
+        if not response["city"] or response["city"] == "Unknown":
+            # Try to infer from pincode prefix
+            prefix = pincode[:3]
+            fallback_map = {
+                "110": {"city": "Delhi", "state": "Delhi"},
+                "212": {"city": "Jhansi", "state": "Uttar Pradesh"},
+                "400": {"city": "Mumbai", "state": "Maharashtra"},
+            }
+            if prefix in fallback_map:
+                response["city"] = fallback_map[prefix]["city"]
+                response["state"] = fallback_map[prefix]["state"]
+        
+        print(f"📤 Final response: {response}\n")
+        return response
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error checking pincode: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/calculate-shipping")
+async def calculate_shipping_charges(data: ShippingCalculation):
+    """Calculate Shiprocket shipping charges based on pincode and weight"""
+    try:
+        print(f"\n{'='*60}")
+        print(f"📦 SHIPPING CALCULATION API CALLED")
+        print(f"📍 Pincode: {data.pincode}")
+        print(f"⚖️  Weight: {data.weight}kg")
+        print(f"💰 COD Amount: ₹{data.cod_amount}")
+        print(f"{'='*60}\n")
+        
+        # Calculate via Shiprocket
+        result = shiprocket_service.calculate_shipping_charges(
+            data.pincode,
+            data.weight,
+            data.cod_amount
+        )
+        
+        print(f"✅ Calculation result: {result}")
+        
+        # ✅ FIXED: Match field names with shiprocket response
+        response = {
+            "success": True,
+            "pincode": data.pincode,
+            "weight": data.weight,
+            "shipping_charge": result.get("freight_charge", 50),  # ✅ Changed
+            "cod_charge": result.get("cod_charges", 0),  # ✅ Changed
+            "total_charge": result.get("total_charge", 50),
+            "estimated_days": result.get("estimated_delivery_days", "3-5 days")  # ✅ Changed
+        }
+        
+        print(f"📤 Sending response: {response}\n")
+        return response
+    
+    except Exception as e:
+        print(f"❌ Error calculating shipping: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/estimate/{pincode}")
+async def get_estimated_delivery(pincode: str):
+    """Get estimated delivery date for pincode via Shiprocket"""
+    try:
+        print(f"📅 Getting delivery estimate for pincode: {pincode}")
+        
+        # Validate pincode
+        if len(pincode) != 6 or not pincode.isdigit():
+            raise HTTPException(status_code=400, detail="Invalid pincode format")
+        
+        # Check serviceability
+        result = shiprocket_service.check_pincode_serviceability(pincode)
+        
+        # Calculate estimated date
+        estimated_days_str = result.get("estimated_days", "3-5 days")
+        # Parse "3-5 days" to get max days
+        try:
+            max_days = int(estimated_days_str.split("-")[1].split()[0])
+        except:
+            max_days = 5
+        
+        estimated_date = datetime.now() + timedelta(days=max_days)
+        
+        return {
+            "pincode": pincode,
+            "serviceable": result.get("serviceable", True),
+            "estimated_days": estimated_days_str,
+            "estimated_date": estimated_date.strftime("%Y-%m-%d"),
+            "estimated_date_formatted": estimated_date.strftime("%d %B, %Y"),
+            "courier_name": result.get("courier_name", "Shiprocket")
+        }
+    
+    except Exception as e:
+        print(f"❌ Error getting estimate: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================
 # DELIVERY TRACKING ROUTES
@@ -76,12 +214,21 @@ async def track_delivery(order_id: str, db: Session = Depends(get_db)):
                 detail="Delivery information not available yet"
             )
         
+        # Get live tracking from Shiprocket if shipment_id exists
+        live_tracking = None
+        if delivery.shipment_id:
+            try:
+                live_tracking = shiprocket_service.track_shipment(delivery.shipment_id)
+            except Exception as tracking_error:
+                print(f"⚠️ Live tracking failed: {str(tracking_error)}")
+        
         print(f"✅ Delivery found: {delivery.waybill_number}")
         
         return {
             "success": True,
             "order_id": order.order_id,
             "waybill_number": delivery.waybill_number,
+            "shipment_id": delivery.shipment_id,
             "current_status": delivery.current_status,
             "current_location": delivery.current_location,
             "courier_name": delivery.courier_name,
@@ -91,7 +238,8 @@ async def track_delivery(order_id: str, db: Session = Depends(get_db)):
             "in_transit_at": delivery.in_transit_at,
             "out_for_delivery_at": delivery.out_for_delivery_at,
             "delivered_at": delivery.delivered_at,
-            "tracking_history": delivery.tracking_history or []
+            "tracking_history": delivery.tracking_history or [],
+            "live_tracking": live_tracking if live_tracking else None
         }
         
     except HTTPException:
@@ -123,10 +271,19 @@ async def track_by_waybill(waybill_number: str, db: Session = Depends(get_db)):
         
         order = db.query(Order).filter(Order.id == delivery.order_id).first()
         
+        # Get live tracking
+        live_tracking = None
+        if delivery.shipment_id:
+            try:
+                live_tracking = shiprocket_service.track_shipment(delivery.shipment_id)
+            except Exception:
+                pass
+        
         return {
             "success": True,
             "order_id": order.order_id if order else None,
             "waybill_number": delivery.waybill_number,
+            "shipment_id": delivery.shipment_id,
             "current_status": delivery.current_status,
             "current_location": delivery.current_location,
             "courier_name": delivery.courier_name,
@@ -136,7 +293,8 @@ async def track_by_waybill(waybill_number: str, db: Session = Depends(get_db)):
             "in_transit_at": delivery.in_transit_at,
             "out_for_delivery_at": delivery.out_for_delivery_at,
             "delivered_at": delivery.delivered_at,
-            "tracking_history": delivery.tracking_history or []
+            "tracking_history": delivery.tracking_history or [],
+            "live_tracking": live_tracking if live_tracking else None
         }
         
     except HTTPException:
@@ -191,7 +349,8 @@ async def update_delivery_status(
             # Update order status
             order = db.query(Order).filter(Order.id == delivery.order_id).first()
             if order:
-                order.order_status = "DELIVERED"
+                from app.models.order import OrderStatus
+                order.order_status = OrderStatus.DELIVERED
                 order.delivered_at = now
         
         # Add to tracking history
@@ -228,96 +387,3 @@ async def update_delivery_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update delivery status"
         )
-
-
-# ============================================
-# PINCODE & SHIPPING ROUTES
-# ============================================
-
-@router.get("/check-pincode/{pincode}")
-async def check_pincode_serviceability(pincode: str):
-    """Check if delivery is available for pincode"""
-    try:
-        # Basic validation
-        if len(pincode) != 6 or not pincode.isdigit():
-            raise HTTPException(status_code=400, detail="Invalid pincode format")
-        
-        # Check if metro city
-        is_metro = any(pincode.startswith(code) for code in METRO_CITIES)
-        
-        return {
-            "serviceable": True,
-            "pincode": pincode,
-            "is_metro": is_metro,
-            "cod_available": True,
-            "prepaid_available": True,
-            "estimated_days": 3 if is_metro else 5
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/calculate-shipping")
-async def calculate_shipping_charges(data: ShippingCalculation):
-    """Calculate shipping charges based on pincode and weight"""
-    try:
-        # Check if metro city
-        is_metro = any(data.pincode.startswith(code) for code in METRO_CITIES)
-        
-        # Base shipping charges
-        base_charge = 50 if is_metro else 70
-        
-        # Weight-based charges (per kg)
-        weight_charge = 0
-        if data.weight > 1:
-            weight_charge = (data.weight - 1) * 20
-        
-        shipping_charge = base_charge + weight_charge
-        
-        # COD charges
-        cod_charge = 0
-        if data.cod_amount > 0:
-            cod_charge = 50
-        
-        total_charge = shipping_charge + cod_charge
-        
-        return {
-            "pincode": data.pincode,
-            "is_metro": is_metro,
-            "base_charge": base_charge,
-            "weight_charge": weight_charge,
-            "shipping_charge": shipping_charge,
-            "cod_charge": cod_charge,
-            "total_charge": total_charge
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/estimate/{pincode}")
-async def get_estimated_delivery(pincode: str):
-    """Get estimated delivery date for pincode"""
-    try:
-        # Validate pincode
-        if len(pincode) != 6 or not pincode.isdigit():
-            raise HTTPException(status_code=400, detail="Invalid pincode format")
-        
-        # Check if metro city
-        is_metro = any(pincode.startswith(code) for code in METRO_CITIES)
-        
-        # Calculate estimated delivery
-        delivery_days = 3 if is_metro else 5
-        estimated_date = datetime.now() + timedelta(days=delivery_days)
-        
-        return {
-            "pincode": pincode,
-            "is_metro": is_metro,
-            "estimated_days": delivery_days,
-            "estimated_date": estimated_date.strftime("%Y-%m-%d"),
-            "estimated_date_formatted": estimated_date.strftime("%d %B, %Y")
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

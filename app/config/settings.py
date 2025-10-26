@@ -83,16 +83,30 @@ class Settings(BaseSettings):
     twilio_phone_number: str = Field(default="", env="TWILIO_PHONE_NUMBER")
     
     # ========================================
-    # Delhivery Shipping
+    # Shiprocket Shipping
     # ========================================
+    shiprocket_email: str = Field(default="mohitsahu15042021@gmail.com", env="SHIPROCKET_EMAIL")
+    shiprocket_password: str = Field(default="h4!OFl3q5AoX9^*2", env="SHIPROCKET_PASSWORD")  # ✅ FIXED
+    shiprocket_use_staging: bool = Field(default=True, env="SHIPROCKET_USE_STAGING")
+    shiprocket_channel_id: str = Field(default="", env="SHIPROCKET_CHANNEL_ID")
+    
+    @field_validator('shiprocket_use_staging', mode='before')
+    @classmethod
+    def parse_shiprocket_staging(cls, v):
+        """Parse shiprocket_use_staging from string to boolean"""
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return bool(v)
+    
+    # Keep Delhivery for backward compatibility (optional)
     delhivery_api_key: str = Field(default="", env="DELHIVERY_API_KEY")
     delhivery_use_staging: bool = Field(default=True, env="DELHIVERY_USE_STAGING")
     
     # ========================================
     # Razorpay Payment
     # ========================================
-    razorpay_key_id: str = Field(default="rzp_test_RSpZwHYSfNHrBG", env="RAZORPAY_KEY_ID")
-    razorpay_key_secret: str = Field(default="CBTjXkvUjzgeJux5DmT2dRvR", env="RAZORPAY_KEY_SECRET")
+    razorpay_key_id: str = Field(default="rzp_test_RXeCOZjzM5In3E", env="RAZORPAY_KEY_ID")  # ✅ FIXED
+    razorpay_key_secret: str = Field(default="yMU9Ev724BnSMXFXLn26keyF", env="RAZORPAY_KEY_SECRET")  # ✅ FIXED
     
     # ========================================
     # WhatsApp Business API
@@ -187,6 +201,11 @@ class Settings(BaseSettings):
         return "https://control.msg91.com/api/v5"
     
     @property
+    def shiprocket_base_url(self) -> str:
+        """Shiprocket API base URL"""
+        return "https://apiv2.shiprocket.in/v1/external"
+    
+    @property
     def delhivery_base_url(self) -> str:
         """Delhivery API base URL"""
         if self.delhivery_use_staging:
@@ -265,11 +284,18 @@ def validate_settings():
     else:
         print(f"   Status: ⚠️  Not configured (using mock)")
     
-    # Shipping Service
-    print(f"\n📦 Delhivery Shipping")
-    if settings.delhivery_api_key and len(settings.delhivery_api_key) > 5:
-        mode = "STAGING" if settings.delhivery_use_staging else "PRODUCTION"
-        print(f"   Status: ✅ Configured ({mode})")
+    # ✅ Shiprocket Shipping - ENHANCED
+    print(f"\n📦 Shiprocket Shipping")
+    if settings.shiprocket_email and settings.shiprocket_password:
+        mode = "MOCK (Debug Mode)" if settings.debug else "LIVE"
+        staging = "Staging" if settings.shiprocket_use_staging else "Production"
+        print(f"   Status: ✅ Configured")
+        print(f"   Email: {settings.shiprocket_email}")
+        print(f"   Mode: {mode}")
+        print(f"   API: {staging}")
+        print(f"   Warehouse: {settings.warehouse_pincode}")
+        if settings.debug:
+            print(f"   💡 NOTE: Set DEBUG=False for REAL Shiprocket rates")
     else:
         print(f"   Status: ⚠️  Not configured (using mock)")
     
@@ -284,7 +310,7 @@ def validate_settings():
     print(f"\n🏢 Warehouse Details")
     print(f"   Name: {settings.warehouse_name}")
     print(f"   Location: {settings.warehouse_city}, {settings.warehouse_state}")
-    print(f"   Pincode: {settings.warehouse_pincode}")
+    print(f"   Pincode: {settings.warehouse_pincode} (Pickup Location)")
     
     # CORS
     print(f"\n🌐 CORS Origins")
@@ -302,6 +328,9 @@ def validate_settings():
     
     if settings.is_production and settings.development_mode:
         warnings.append("⚠️  SMS Development Mode is ON in production!")
+    
+    if settings.debug and settings.shiprocket_email:
+        warnings.append("💡 Shiprocket in MOCK mode (DEBUG=True). Set DEBUG=False for real rates.")
     
     if warnings:
         print(f"\n⚠️  WARNINGS")
@@ -321,7 +350,9 @@ def is_feature_enabled(feature: str) -> bool:
         'sms_mock': settings.development_mode,
         'whatsapp': bool(settings.whatsapp_api_token and settings.whatsapp_phone_number_id),
         'payment': bool(settings.razorpay_key_id and settings.razorpay_key_secret),
-        'shipping': bool(settings.delhivery_api_key),
+        'shiprocket': bool(settings.shiprocket_email and settings.shiprocket_password),
+        'shiprocket_live': bool(settings.shiprocket_email and settings.shiprocket_password and not settings.debug),
+        'shipping': bool(settings.shiprocket_email and settings.shiprocket_password),
         'oauth': bool(settings.google_client_id and len(settings.google_client_id) > 20),
     }
     return features.get(feature, False)

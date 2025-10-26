@@ -55,54 +55,7 @@ PRODUCTS = [
         "rating": 4.7,
         "reviews": 189
     },
-    {
-        "id": 3,
-        "name": "Pure Groundnut Oil (Kachi Ghani)",
-        "slug": "groundnut-oil",
-        "category": "Groundnut Oil",
-        "price": 349.0,
-        "mrp": 449.0,
-        "discount": 22,
-        "size": "1",
-        "unit": "Liter",
-        "image": "/images/products/groundnut-oil.jpg",
-        "description": "Traditional cold-pressed groundnut oil with rich aroma.",
-        "inStock": True,
-        "rating": 4.9,
-        "reviews": 312
-    },
-    {
-        "id": 4,
-        "name": "Pure Sesame Oil (Kachi Ghani)",
-        "slug": "sesame-oil",
-        "category": "Sesame Oil",
-        "price": 429.0,
-        "mrp": 549.0,
-        "discount": 22,
-        "size": "500",
-        "unit": "ml",
-        "image": "/images/products/sesame-oil.jpg",
-        "description": "Premium cold-pressed sesame oil with nutty flavor.",
-        "inStock": True,
-        "rating": 4.6,
-        "reviews": 156
-    },
-    {
-        "id": 5,
-        "name": "Virgin Coconut Oil (Cold-Pressed)",
-        "slug": "coconut-oil",
-        "category": "Coconut Oil",
-        "price": 389.0,
-        "mrp": 489.0,
-        "discount": 20,
-        "size": "500",
-        "unit": "ml",
-        "image": "/images/products/coconut-oil.jpg",
-        "description": "Extra virgin coconut oil extracted from fresh coconuts.",
-        "inStock": True,
-        "rating": 4.8,
-        "reviews": 278
-    }
+   
 ]
 
 @router.get("/", response_model=List[Product])
