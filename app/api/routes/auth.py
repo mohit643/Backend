@@ -1,26 +1,15 @@
-# backend/app/routers/auth.py
+# backend/app/routers/auth.py (WITHOUT OTP - Only Google OAuth)
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
-import random
-import string
-import os
+from datetime import datetime
 
 from app.database.connection import get_db
-from app.models.customer import Customer, OTP
-from app.services.sms_service import get_sms_service
+from app.models.customer import Customer
 
 router = APIRouter()
 
 # ==================== REQUEST MODELS ====================
-class SendOTPRequest(BaseModel):
-    phone: str
-
-class VerifyOTPRequest(BaseModel):
-    phone: str
-    otp: str
-
 class UpdateProfileRequest(BaseModel):
     full_name: str
     email: str = None
@@ -33,10 +22,6 @@ class GoogleLoginRequest(BaseModel):
     credential: str  # Google ID token
 
 # ==================== HELPER FUNCTIONS ====================
-def generate_otp():
-    """Generate 6-digit OTP"""
-    return ''.join(random.choices(string.digits, k=6))
-
 def format_phone(phone: str) -> str:
     """Format phone number"""
     phone = ''.join(filter(str.isdigit, phone))
@@ -44,133 +29,49 @@ def format_phone(phone: str) -> str:
         phone = f"91{phone}"
     return phone
 
-# ==================== OTP-BASED AUTH ====================
-@router.post("/send-otp")
-async def send_otp(request: SendOTPRequest, db: Session = Depends(get_db)):
-    """Send OTP to phone number"""
+# ==================== ADMIN CHECK ENDPOINT ====================
+@router.get("/check-admin")
+async def check_admin(
+    email: str = None,
+    phone: str = None,
+    db: Session = Depends(get_db)
+):
+    """Check if user is admin"""
     try:
-        phone = format_phone(request.phone)
+        customer = None
         
-        # Validate phone
-        if len(phone) != 12:  # 91 + 10 digits
-            raise HTTPException(status_code=400, detail="Invalid phone number")
-        
-        # Generate OTP
-        otp_code = generate_otp()
-        
-        # Save OTP to database
-        otp_entry = OTP(
-            phone=phone,
-            otp=otp_code,
-            purpose="login",
-            expires_at=datetime.now() + timedelta(minutes=10)
-        )
-        db.add(otp_entry)
-        db.commit()
-        
-        # 📱 SEND OTP VIA SMS SERVICE
-        sms_service = get_sms_service()
-        sms_result = sms_service.send_otp(phone, otp_code)
-        
-        # Check if development mode
-        development_mode = os.getenv("DEVELOPMENT_MODE", "True") == "True"
-        
-        # Response
-        response = {
-            "success": True,
-            "message": "OTP sent successfully",
-            "phone": request.phone,
-            "expires_in": 600
-        }
-        
-        # Only include OTP in response during development mode
-        if development_mode:
-            response["otp"] = otp_code
-            print(f"📱 [DEV] OTP for {phone}: {otp_code}")
-        
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Error in send_otp: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/verify-otp")
-async def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
-    """Verify OTP and login/signup customer"""
-    try:
-        phone = format_phone(request.phone)
-        
-        # Find valid OTP
-        otp_entry = db.query(OTP).filter(
-            OTP.phone == phone,
-            OTP.otp == request.otp,
-            OTP.is_used == False,
-            OTP.expires_at > datetime.now()
-        ).first()
-        
-        if not otp_entry:
-            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
-        
-        # Mark OTP as used
-        otp_entry.is_used = True
-        db.commit()
-        
-        # Find or create customer
-        customer = db.query(Customer).filter(Customer.phone == phone).first()
+        if email:
+            customer = db.query(Customer).filter(Customer.email == email).first()
+        elif phone:
+            phone = format_phone(phone)
+            customer = db.query(Customer).filter(Customer.phone == phone).first()
         
         if not customer:
-            # New customer - signup
-            customer = Customer(
-                phone=phone,
-                is_verified=True,
-                last_login=datetime.now()
-            )
-            db.add(customer)
-            db.commit()
-            db.refresh(customer)
-            
+            print(f"❌ Customer not found: {email or phone}")
             return {
-                "success": True,
-                "message": "Account created successfully",
-                "is_new_user": True,
-                "customer": {
-                    "id": customer.id,
-                    "phone": customer.phone,
-                    "full_name": customer.full_name,
-                    "email": customer.email,
-                    "authType": "phone"
-                }
-            }
-        else:
-            # Existing customer - login
-            customer.last_login = datetime.now()
-            customer.is_verified = True
-            db.commit()
-            
-            return {
-                "success": True,
-                "message": "Login successful",
-                "is_new_user": False,
-                "customer": {
-                    "id": customer.id,
-                    "phone": customer.phone,
-                    "full_name": customer.full_name,
-                    "email": customer.email,
-                    "address": customer.address,
-                    "city": customer.city,
-                    "state": customer.state,
-                    "pincode": customer.pincode,
-                    "authType": "phone"
-                }
+                "success": False,
+                "is_admin": False,
+                "message": "Customer not found"
             }
         
-    except HTTPException:
-        raise
+        print(f"🔍 Admin check for: {customer.email or customer.phone}")
+        print(f"✅ Is Admin: {customer.is_admin}")
+        
+        return {
+            "success": True,
+            "is_admin": bool(customer.is_admin),
+            "email": customer.email,
+            "phone": customer.phone,
+            "full_name": customer.full_name
+        }
+        
     except Exception as e:
-        print(f"❌ Error in verify_otp: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Error in check_admin: {str(e)}")
+        return {
+            "success": False,
+            "is_admin": False,
+            "error": str(e)
+        }
 
 # ==================== GOOGLE OAUTH AUTH ====================
 @router.post("/google-login")

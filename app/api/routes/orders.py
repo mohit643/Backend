@@ -311,6 +311,271 @@ async def get_user_orders_by_phone(phone: str, db: Session = Depends(get_db)):
         } for order in orders]
     }
 
+@router.get("/{order_id}/invoice")
+async def get_order_invoice(order_id: str, db: Session = Depends(get_db)):
+    """
+    Get Shiprocket invoice PDF for an order
+    Returns redirect to Shiprocket invoice or error
+    """
+    try:
+        print(f"\n{'='*70}")
+        print(f"📄 GENERATING INVOICE FOR ORDER: {order_id}")
+        print(f"{'='*70}\n")
+        
+        # Get order from database
+        order = db.query(Order).filter(Order.order_id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Check if debug mode
+        if settings.debug:
+            print("⚠️  Debug mode is ON - cannot generate real invoice")
+            return JSONResponse({
+                "success": False,
+                "message": "Invoice generation disabled in debug mode",
+                "note": "Set DEBUG=false in .env to enable real Shiprocket invoices",
+                "order_id": order_id
+            }, status_code=400)
+        
+        # Get delivery record to find Shiprocket shipment ID
+        delivery = db.query(Delivery).filter(Delivery.order_id == order.id).first()
+        
+        if not delivery or not delivery.shipment_id:
+            return JSONResponse({
+                "success": False,
+                "message": "Invoice not available yet",
+                "note": "Shiprocket shipment not created for this order. Wait 2-3 minutes after order placement.",
+                "order_id": order_id
+            }, status_code=404)
+        
+        # Get Shiprocket auth token
+        headers = shiprocket_service._get_headers()
+        
+        if not headers.get("Authorization"):
+            raise HTTPException(
+                status_code=401, 
+                detail="Shiprocket authentication failed"
+            )
+        
+        # Call Shiprocket Invoice API
+        url = f"{shiprocket_service.BASE_URL}/orders/print/invoice"
+        
+        # Try with shipment_id first (more reliable)
+        payload = {
+            "ids": [delivery.shipment_id]
+        }
+        
+        print(f"📡 Calling Shiprocket Invoice API...")
+        print(f"   Shipment ID: {delivery.shipment_id}")
+        print(f"   Waybill: {delivery.waybill_number}\n")
+        
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        print(f"📥 Response Status: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"📄 API Response received\n")
+            
+            # Shiprocket returns invoice URL
+            invoice_url = (
+                data.get("invoice_url") or 
+                data.get("url") or 
+                data.get("data", {}).get("invoice_url") or
+                data.get("data", {}).get("url")
+            )
+            
+            if invoice_url:
+                print(f"✅ Invoice URL: {invoice_url}\n")
+                # Redirect to actual Shiprocket invoice PDF
+                return RedirectResponse(url=invoice_url)
+            
+            # Check if base64 PDF is returned
+            pdf_data = data.get("pdf") or data.get("data", {}).get("pdf")
+            if pdf_data:
+                print("📄 Base64 PDF received\n")
+                return JSONResponse({
+                    "success": True,
+                    "pdf_base64": pdf_data,
+                    "message": "Decode base64 to display PDF"
+                })
+            
+            # No invoice found
+            print(f"⚠️  No invoice URL/PDF in response")
+            print(f"   Full response: {data}\n")
+            
+            return JSONResponse({
+                "success": False,
+                "message": "Invoice not ready yet",
+                "note": "Please wait 2-3 minutes after order creation and try again",
+                "shipment_id": delivery.shipment_id,
+                "waybill": delivery.waybill_number
+            }, status_code=404)
+            
+        else:
+            error_text = response.text
+            print(f"❌ Shiprocket API Error: {error_text}\n")
+            
+            return JSONResponse({
+                "success": False,
+                "message": "Failed to generate invoice from Shiprocket",
+                "error": error_text,
+                "status_code": response.status_code,
+                "note": "Check if order exists in Shiprocket dashboard"
+            }, status_code=response.status_code)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"\n❌ Invoice Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Optional: Test endpoint to create a real Shiprocket test order
+@router.post("/test/shiprocket")
+async def create_test_shiprocket_order(db: Session = Depends(get_db)):
+    """
+    Create a test order in Shiprocket to get real invoice
+    Only works when DEBUG=false
+    """
+    try:
+        if settings.debug:
+            return {
+                "success": False,
+                "message": "Test order creation disabled in debug mode",
+                "note": "Set DEBUG=false in .env"
+            }
+        
+        # Create test order data
+        test_order_id = generate_order_id()
+        
+        test_order_data = {
+            "order_id": test_order_id,
+            "shipping_name": "Mohit Sahu (TEST)",
+            "shipping_phone": "8887948909",
+            "shipping_email": "sahumohit643@gmail.com",
+            "shipping_address": "Radha Nagar, Fatehpur",
+            "shipping_city": "Fatehpur",
+            "shipping_state": "Uttar Pradesh",
+            "shipping_pincode": "212601",
+            "payment_method": "cod",
+            "total": 590.0,
+            "subtotal": 540.0,
+            "shipping_cost": 50.0,
+            "weight": 1.0,
+            "items": [{
+                "product_id": 1,
+                "product_name": "Cold-Pressed Mustard Oil (1L) - TEST",
+                "quantity": 1,
+                "price": 540.0
+            }]
+        }
+        
+        print(f"\n🧪 Creating TEST order in Shiprocket...")
+        print(f"   Order ID: {test_order_id}")
+        
+        # Create shipment
+        shipment_result = shiprocket_service.create_shipment(test_order_data)
+        
+        if shipment_result.get("success"):
+            # Save to database
+            customer = db.query(Customer).filter(
+                Customer.phone == "918887948909"
+            ).first()
+            
+            if not customer:
+                customer = Customer(
+                    phone="918887948909",
+                    email="sahumohit643@gmail.com",
+                    full_name="Mohit Sahu (TEST)"
+                )
+                db.add(customer)
+                db.commit()
+                db.refresh(customer)
+            
+            # Create order in DB
+            new_order = Order(
+                order_id=test_order_id,
+                customer_id=customer.id,
+                shipping_name="Mohit Sahu (TEST)",
+                shipping_phone="8887948909",
+                shipping_email="sahumohit643@gmail.com",
+                shipping_address="Radha Nagar, Fatehpur",
+                shipping_city="Fatehpur",
+                shipping_state="Uttar Pradesh",
+                shipping_pincode="212601",
+                subtotal=540.0,
+                shipping_cost=50.0,
+                total=590.0,
+                payment_method="cod",
+                payment_status=PaymentStatus.COD,
+                order_status=OrderStatus.PROCESSING,
+                waybill_number=shipment_result.get("waybill", ""),
+                estimated_delivery="5-7 business days"
+            )
+            
+            db.add(new_order)
+            db.commit()
+            db.refresh(new_order)
+            
+            # Create delivery record
+            delivery = Delivery(
+                order_id=new_order.id,
+                waybill_number=shipment_result.get("waybill", ""),
+                shipment_id=shipment_result.get("shipment_id", ""),
+                current_status="Order Placed",
+                current_location="Fatehpur, Uttar Pradesh",
+                courier_name=shipment_result.get("courier_name", "Shiprocket"),
+                tracking_url=shipment_result.get("tracking_url", ""),
+                estimated_delivery_date=datetime.utcnow() + timedelta(days=5),
+                weight=1.0,
+                shipping_charge=50.0,
+                tracking_history=[{
+                    "status": "Order Placed",
+                    "location": "Fatehpur, Uttar Pradesh",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "description": "TEST order placed in Shiprocket"
+                }]
+            )
+            
+            db.add(delivery)
+            db.commit()
+            
+            print(f"\n✅ TEST order created successfully!")
+            
+            return {
+                "success": True,
+                "message": "Test order created in Shiprocket!",
+                "order_id": test_order_id,
+                "shipment_id": shipment_result.get("shipment_id"),
+                "waybill": shipment_result.get("waybill"),
+                "tracking_url": shipment_result.get("tracking_url"),
+                "invoice_url": f"/api/orders/{test_order_id}/invoice",
+                "next_steps": {
+                    "1": f"GET /api/orders/{test_order_id}/invoice to download invoice",
+                    "2": f"GET /api/orders/{test_order_id}/track to track shipment",
+                    "3": "Login to Shiprocket dashboard to see the order"
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to create test order in Shiprocket",
+                "error": shipment_result
+            }
+            
+    except Exception as e:
+        print(f"❌ Test order error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{order_id}/track")
 async def track_order(order_id: str, db: Session = Depends(get_db)):

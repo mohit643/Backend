@@ -1,3 +1,4 @@
+# backend/app/models/customer.py
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -9,10 +10,10 @@ class Customer(Base):
     id = Column(Integer, primary_key=True, index=True)
     
     # Authentication - Multiple methods
-    phone = Column(String(15), unique=True, nullable=True, index=True)  # ✅ Changed to nullable
+    phone = Column(String(15), unique=True, nullable=True, index=True)
     email = Column(String(200), unique=True, nullable=True, index=True)
     
-    # ✅ NEW: Google OAuth Fields
+    # Google OAuth Fields
     google_id = Column(String(100), unique=True, nullable=True, index=True)
     google_email = Column(String(200), nullable=True)
     google_picture = Column(String(500), nullable=True)
@@ -31,6 +32,9 @@ class Customer(Base):
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
     
+    # ✅ NEW: Admin flag
+    is_admin = Column(Boolean, default=False, nullable=False)
+    
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -43,7 +47,6 @@ class Customer(Base):
         return f"<Customer {self.email or self.phone or self.google_id}>"
 
 
-# OTP Storage Model (No changes needed)
 class OTP(Base):
     __tablename__ = "otps"
     
