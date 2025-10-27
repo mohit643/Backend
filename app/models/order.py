@@ -56,6 +56,13 @@ class Order(Base):
     # Order Status
     order_status = Column(Enum(OrderStatus), default=OrderStatus.PENDING)
     
+    # ✅ ADD THESE 5 LINES HERE (Shiprocket Integration)
+    shiprocket_order_id = Column(String(100), nullable=True)
+    shipment_id = Column(String(100), nullable=True)
+    awb_code = Column(String(100), nullable=True)
+    courier_id = Column(Integer, nullable=True)
+    courier_name = Column(String(100), nullable=True)
+    
     # Delivery Info
     waybill_number = Column(String(100))
     estimated_delivery = Column(String(50))

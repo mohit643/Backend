@@ -85,19 +85,8 @@ async def check_pincode_serviceability(pincode: str):
             "courier_name": result.get("courier_name", "Shiprocket")
         }
         
-        # ✅ FALLBACK: If still unknown, use basic inference
-        if not response["city"] or response["city"] == "Unknown":
-            # Try to infer from pincode prefix
-            prefix = pincode[:3]
-            fallback_map = {
-                "110": {"city": "Delhi", "state": "Delhi"},
-                "212": {"city": "Jhansi", "state": "Uttar Pradesh"},
-                "400": {"city": "Mumbai", "state": "Maharashtra"},
-            }
-            if prefix in fallback_map:
-                response["city"] = fallback_map[prefix]["city"]
-                response["state"] = fallback_map[prefix]["state"]
-        
+   
+       
         print(f"📤 Final response: {response}\n")
         return response
     
@@ -133,10 +122,10 @@ async def calculate_shipping_charges(data: ShippingCalculation):
             "success": True,
             "pincode": data.pincode,
             "weight": data.weight,
-            "shipping_charge": result.get("freight_charge", 50),  # ✅ Changed
-            "cod_charge": result.get("cod_charges", 0),  # ✅ Changed
+            "shipping_charge": result.get("shipping_charge", 50),  # ✅ Correct key
+            "cod_charge": result.get("cod_charge", 0),  # ✅ Correct key
             "total_charge": result.get("total_charge", 50),
-            "estimated_days": result.get("estimated_delivery_days", "3-5 days")  # ✅ Changed
+            "estimated_days": result.get("estimated_days", "3-5 days")  # ✅ Correct key
         }
         
         print(f"📤 Sending response: {response}\n")

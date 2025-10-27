@@ -25,6 +25,38 @@ class ShiprocketService:
         if not self.debug and self.email and self.password:
             self._login()
     
+    # ✅ NEW: Add phone formatting function
+    def format_phone_number(self, phone: str) -> str:
+        """
+        Format phone number for Shiprocket API
+        Shiprocket expects 10-digit phone without country code
+        
+        Examples:
+        - +918887948909 → 8887948909
+        - 918887948909 → 8887948909
+        - 08887948909 → 8887948909
+        - 8887948909 → 8887948909
+        """
+        # Remove all non-digit characters
+        phone = ''.join(filter(str.isdigit, phone))
+        
+        # Remove country code (91) if present
+        if phone.startswith('91') and len(phone) == 12:
+            phone = phone[2:]
+        
+        # Remove leading zero if present
+        if phone.startswith('0') and len(phone) == 11:
+            phone = phone[1:]
+        
+        # Validate 10-digit number
+        if len(phone) != 10:
+            print(f"⚠️ Invalid phone: {phone} (length: {len(phone)})")
+            # Return as is if can't format properly
+            return phone
+        
+        print(f"📱 Phone formatted: {phone}")
+        return phone
+    
     def _login(self) -> bool:
         """Login to Shiprocket and get auth token"""
         try:
@@ -110,90 +142,95 @@ class ShiprocketService:
             
             if response.status_code == 200:
                 data = response.json()
-                print(f"📦 Response received with {len(data.keys())} keys")
-                
-                # Check if we have courier data
                 courier_data = data.get("data", {})
                 available_couriers = courier_data.get("available_courier_companies", [])
                 
-                print(f"📦 Available couriers: {len(available_couriers)}")
-                
                 if available_couriers:
-                    # Print first courier for debugging
-                    print(f"📦 Sample courier: {available_couriers[0].get('courier_name', 'Unknown')}")
+                    # ✅ NEW: Prefer Amazon Shipping Surface
+                    selected_courier = None
                     
-                    # ✅ Get cheapest courier with safe rate extraction
-                    def get_rate(courier):
-                        try:
-                            rate = courier.get("rate") or courier.get("freight_charge") or courier.get("total_charge")
-                            if rate is not None:
-                                return float(rate)
-                            return 999
-                        except (ValueError, TypeError):
-                            return 999
+                    # Try to find Amazon Shipping Surface
+                    for courier in available_couriers:
+                        courier_name = courier.get("courier_name", "").lower()
+                        if "amazon shipping surface" in courier_name:
+                            selected_courier = courier
+                            print(f"✅ Found preferred courier: Amazon Shipping Surface")
+                            break
                     
-                    cheapest = min(available_couriers, key=get_rate)
+                    # Fallback: If Amazon not available, use cheapest
+                    if not selected_courier:
+                        print(f"⚠️ Amazon Shipping not available, using cheapest")
+                        def get_rate(c):
+                            try:
+                                rate = c.get("rate") or c.get("freight_charge") or c.get("total_charge")
+                                return float(rate) if rate is not None else 999999
+                            except:
+                                return 999999
+                        
+                        selected_courier = min(available_couriers, key=get_rate)
                     
-                    # Extract rate safely
-                    rate = cheapest.get("rate") or cheapest.get("freight_charge") or cheapest.get("total_charge") or 50
+                    print(f"🚚 Selected courier: {selected_courier.get('courier_name', 'Unknown')}")
                     
-                    # ✅ FIXED: Get estimated days properly
-                    estimated_days = cheapest.get('estimated_delivery_days', '3-5')
-                    if estimated_days and not estimated_days.endswith('days'):
-                        estimated_days = f"{estimated_days} days"
-                    
+                    # ✅ Extract data from selected courier
                     result = {
                         "serviceable": True,
                         "pincode": pincode,
-                        "city": cheapest.get("city", ""),
-                        "state": cheapest.get("state", ""),
-                        "cod_available": cod,
-                        "estimated_days": estimated_days,  # ✅ FIXED
-                        "shipping_charge": float(rate),
-                        "courier_name": cheapest.get("courier_name", "Standard")
+                        "city": selected_courier.get("city", ""),
+                        "state": selected_courier.get("state", ""),
+                        "cod_available": selected_courier.get("cod", 1) == 1,
+                        "prepaid_available": True,
+                        "shipping_charge": float(selected_courier.get("rate") or selected_courier.get("freight_charge") or 50),
+                        "cod_charges": float(selected_courier.get("cod_charges", 0)),
+                        "estimated_days": selected_courier.get("etd", "3-5 days"),
+                        "courier_name": selected_courier.get("courier_name", ""),
+                        "courier_id": selected_courier.get("courier_company_id"),
+                        "available_couriers": len(available_couriers)
                     }
                     
-                    print(f"✅ Result: {result}\n")
+                    print(f"✅ Pincode is serviceable")
+                    print(f"📍 City: {result['city']}")
+                    print(f"📍 State: {result['state']}")
+                    print(f"💰 Shipping: ₹{result['shipping_charge']}")
+                    print(f"🚚 Courier: {result['courier_name']}")
+                    print(f"⏱️  ETA: {result['estimated_days']}")
+                    
                     return result
-                else:
-                    print("⚠️ No couriers available, using mock")
-                    return self._mock_serviceability(pincode)
-            else:
-                print(f"⚠️ API error: {response.status_code}")
-                print(f"   Response: {response.text}")
-                return self._mock_serviceability(pincode)
-                
+            
+            print("❌ Pincode not serviceable or API error")
+            return {
+                "serviceable": False, 
+                "pincode": pincode,
+                "error": "No courier available for this pincode"
+            }
+            
         except Exception as e:
             print(f"❌ Serviceability check error: {str(e)}")
             import traceback
             traceback.print_exc()
-            print("\n⚠️ Falling back to mock data")
-            return self._mock_serviceability(pincode)
-    
+            return {
+                "serviceable": False, 
+                "pincode": pincode,
+                "error": str(e)
+            }
+
+
+   
     def _mock_serviceability(self, pincode: str) -> Dict:
-        """Mock serviceability - Comprehensive Indian pincode database"""
-        print(f"🔧 Mock serviceability for pincode: {pincode}")
-        
-        # ✅ COMPREHENSIVE DATABASE - 50+ cities
+        """Mock serviceability check for development"""
         pincode_database = {
             # Uttar Pradesh
-            "212": {"city": "Fatehpur", "state": "Uttar Pradesh"},  # ✅ CORRECTED
-            "213": {"city": "Mainpuri", "state": "Uttar Pradesh"},
+            "212": {"city": "Fatehpur", "state": "Uttar Pradesh"},
             "226": {"city": "Lucknow", "state": "Uttar Pradesh"},
-            "208": {"city": "Kanpur", "state": "Uttar Pradesh"},
-            "201": {"city": "Ghaziabad", "state": "Uttar Pradesh"},
-            "282": {"city": "Agra", "state": "Uttar Pradesh"},
-            "221": {"city": "Varanasi", "state": "Uttar Pradesh"},
-            "284": {"city": "Jhansi", "state": "Uttar Pradesh"},
-            "250": {"city": "Meerut", "state": "Uttar Pradesh"},
             "281": {"city": "Mathura", "state": "Uttar Pradesh"},
+            "201": {"city": "Ghaziabad", "state": "Uttar Pradesh"},
+            "211": {"city": "Prayagraj", "state": "Uttar Pradesh"},
+            "221": {"city": "Varanasi", "state": "Uttar Pradesh"},
             
             # Delhi NCR
-            "110": {"city": "New Delhi", "state": "Delhi"},
-            "111": {"city": "New Delhi", "state": "Delhi"},
-            "121": {"city": "Faridabad", "state": "Haryana"},
-            "122": {"city": "Gurgaon", "state": "Haryana"},
-            "124": {"city": "Rohtak", "state": "Haryana"},
+            "110": {"city": "Delhi", "state": "Delhi"},
+            "121": {"city": "Gurugram", "state": "Haryana"},
+            "122": {"city": "Gurugram", "state": "Haryana"},
+            "201": {"city": "Noida", "state": "Uttar Pradesh"},
             
             # Maharashtra
             "400": {"city": "Mumbai", "state": "Maharashtra"},
@@ -310,26 +347,42 @@ class ShiprocketService:
                 print(f"📦 Available couriers: {len(available_couriers)}")
                 
                 if available_couriers:
-                    # ✅ Get cheapest courier
-                    def get_rate(courier):
-                        try:
-                            rate = courier.get("rate") or courier.get("freight_charge") or courier.get("total_charge")
-                            if rate is not None:
-                                return float(rate)
-                            return 999
-                        except (ValueError, TypeError):
-                            return 999
+                    # ✅ NEW: Prefer Amazon Shipping Surface (same logic as check_pincode)
+                    selected_courier = None
                     
-                    cheapest = min(available_couriers, key=get_rate)
+                    # Try to find Amazon Shipping Surface
+                    for courier in available_couriers:
+                        courier_name = courier.get("courier_name", "").lower()
+                        if "amazon shipping surface" in courier_name:
+                            selected_courier = courier
+                            print(f"✅ Found preferred courier: Amazon Shipping Surface")
+                            break
                     
-                    # ✅ Extract charges properly
-                    shipping_charge = float(cheapest.get("rate") or cheapest.get("freight_charge") or cheapest.get("total_charge") or 50)
-                    cod_charge = float(cheapest.get("cod_charges") or cheapest.get("cod_charge") or 0) if cod_amount > 0 else 0
+                    # Fallback: If Amazon not available, use cheapest
+                    if not selected_courier:
+                        print(f"⚠️ Amazon Shipping not available, using cheapest")
+                        def get_rate(c):
+                            try:
+                                rate = c.get("rate") or c.get("freight_charge") or c.get("total_charge")
+                                return float(rate) if rate is not None else 999999
+                            except:
+                                return 999999
+                        
+                        selected_courier = min(available_couriers, key=get_rate)
                     
-                    # ✅ Get estimated days
-                    estimated_days = cheapest.get('estimated_delivery_days', '3-5')
-                    if estimated_days and not estimated_days.endswith('days'):
-                        estimated_days = f"{estimated_days} days"
+                    print(f"🚚 Selected courier: {selected_courier.get('courier_name', 'Unknown')}")
+                    
+                    # ✅ Extract charges from selected courier
+                    shipping_charge = float(selected_courier.get("rate") or selected_courier.get("freight_charge") or selected_courier.get("total_charge") or 50)
+                    cod_charge = float(selected_courier.get("cod_charges") or selected_courier.get("cod_charge") or 0) if cod_amount > 0 else 0
+                    
+                    # ✅ Get estimated days properly
+                    estimated_days = selected_courier.get('etd', '3-5')
+                    if estimated_days and isinstance(estimated_days, str):
+                        if 'days' not in estimated_days.lower():
+                            estimated_days = f"{estimated_days} days"
+                    else:
+                        estimated_days = "3-5 days"
                     
                     result = {
                         "pincode": pincode,
@@ -337,10 +390,17 @@ class ShiprocketService:
                         "shipping_charge": shipping_charge,
                         "cod_charge": cod_charge,
                         "total_charge": shipping_charge + cod_charge,
-                        "estimated_days": estimated_days  # ✅ FIXED
+                        "estimated_days": estimated_days,
+                        "courier_name": selected_courier.get("courier_name", "Shiprocket")
                     }
                     
-                    print(f"✅ Calculation result: {result}\n")
+                    print(f"✅ Calculation result:")
+                    print(f"   🚚 Courier: {result['courier_name']}")
+                    print(f"   💰 Shipping: ₹{result['shipping_charge']}")
+                    print(f"   💵 COD: ₹{result['cod_charge']}")
+                    print(f"   💵 Total: ₹{result['total_charge']}")
+                    print(f"   ⏱️  ETA: {result['estimated_days']}\n")
+                    
                     return result
             
             print("⚠️ API error or no couriers, using mock")
@@ -351,7 +411,7 @@ class ShiprocketService:
             import traceback
             traceback.print_exc()
             return self._mock_shipping_charges(pincode, weight, cod_amount)
-    
+
     def _mock_shipping_charges(self, pincode: str, weight: float, cod_amount: float) -> Dict:
         """Mock shipping charges with proper weight-based calculation"""
         print(f"🔧 Calculating mock charges...")
@@ -406,6 +466,9 @@ class ShiprocketService:
             
             url = f"{self.BASE_URL}/orders/create/adhoc"
             
+            # ✅ FORMAT PHONE NUMBERS
+            shipping_phone = self.format_phone_number(order_data.get("shipping_phone", ""))
+            
             # Prepare shipment payload
             payload = {
                 "order_id": order_data.get("order_id"),
@@ -422,7 +485,7 @@ class ShiprocketService:
                 "billing_state": order_data.get("shipping_state"),
                 "billing_country": "India",
                 "billing_email": order_data.get("shipping_email", "customer@pureanddesi.com"),
-                "billing_phone": order_data.get("shipping_phone"),
+                "billing_phone": shipping_phone,  # ✅ USE FORMATTED PHONE
                 "shipping_is_billing": True,
                 "order_items": [{
                     "name": item.get("product_name", "Cold-Pressed Oil"),
@@ -446,6 +509,7 @@ class ShiprocketService:
             }
             
             print(f"📦 Creating shipment...")
+            print(f"   Phone: {shipping_phone}")  # ✅ Debug formatted phone
             
             response = requests.post(
                 url,
@@ -459,27 +523,41 @@ class ShiprocketService:
             if response.status_code in [200, 201]:
                 data = response.json()
                 
+                # ✅ EXTRACT REAL SHIPROCKET DATA
                 if data.get("order_id"):
                     result = {
                         "success": True,
-                        "order_id": data.get("order_id"),
-                        "shipment_id": data.get("shipment_id"),
+                        "shiprocket_order_id": str(data.get("order_id")),  # ✅ Real Shiprocket order ID
+                        "shipment_id": str(data.get("shipment_id")),      # ✅ Real shipment ID
+                        "awb_code": data.get("awb_code", ""),              # ✅ Real AWB code
+                        "courier_id": data.get("courier_id"),              # ✅ Real courier ID
+                        "courier_name": data.get("courier_name", ""),      # ✅ Real courier name
                         "tracking_url": f"https://shiprocket.co/tracking/{data.get('shipment_id', '')}",
-                        "awb_code": data.get("awb_code", ""),
-                        "courier_name": data.get("courier_name", "Shiprocket"),
                         "estimated_delivery": (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
                     }
-                    print(f"✅ Shipment created: {result['shipment_id']}")
+                    print(f"✅ Shipment created successfully!")
+                    print(f"   Shiprocket Order ID: {result['shiprocket_order_id']}")
+                    print(f"   Shipment ID: {result['shipment_id']}")
+                    print(f"   AWB Code: {result['awb_code']}")
+                    print(f"   Courier: {result['courier_name']}")
                     return result
             
-            print(f"⚠️ Shiprocket API Error: {response.text}")
-            return self._create_mock_shipment(order_data.get('order_id', 'TEST'))
+            # ✅ PROPER ERROR HANDLING - NO FAKE DATA
+            print(f"❌ Shiprocket API Error: {response.text}")
+            return {
+                "success": False,
+                "error": response.text,
+                "status_code": response.status_code
+            }
             
         except Exception as e:
             print(f"❌ Shipment creation error: {str(e)}")
             import traceback
             traceback.print_exc()
-            return self._create_mock_shipment(order_data.get('order_id', 'TEST'))
+            return {
+                "success": False,
+                "error": str(e)
+            }
     
     def _create_mock_shipment(self, order_id: str) -> Dict:
         """Create mock shipment for development"""
@@ -496,6 +574,76 @@ class ShiprocketService:
             "mock": True
         }
     
+    
+    def get_order_details(self, shiprocket_order_id: str) -> Dict:
+        """Get order details from Shiprocket"""
+        try:
+            if self.debug:
+                return {"success": False, "message": "Debug mode"}
+            
+            url = f"{self.BASE_URL}/orders/show/{shiprocket_order_id}"
+            
+            print(f"🔍 Getting order details: {shiprocket_order_id}")
+            
+            response = requests.get(
+                url,
+                headers=self._get_headers(),
+                timeout=30
+            )
+            
+            print(f"📥 Response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # ✅ Handle different formats
+                if isinstance(data, dict) and "data" in data:
+                    order_data = data["data"]
+                else:
+                    order_data = data
+                
+                # Get status
+                status = order_data.get("status", "")
+                
+                # ✅ CORRECT: Check type FIRST, then extract
+                shipments = order_data.get("shipments")
+                shipment_status = ""
+                
+                if shipments:
+                    print(f"📦 Shipments type: {type(shipments)}")
+                    
+                    # ✅ Check if LIST
+                    if isinstance(shipments, list) and len(shipments) > 0:
+                        shipment_status = shipments[0].get("status", "")
+                        print(f"📦 Shipment status (from list): '{shipment_status}'")
+                    # ✅ Check if DICT
+                    elif isinstance(shipments, dict):
+                        shipment_status = shipments.get("status", "")
+                        print(f"📦 Shipment status (from dict): '{shipment_status}'")
+                
+                result = {
+                    "success": True,
+                    "order_id": shiprocket_order_id,
+                    "status": status,
+                    "shipment_status": shipment_status,
+                    "order_data": order_data
+                }
+                
+                print(f"✅ Order status: '{status}'")
+                if shipment_status:
+                    print(f"   Shipment status: '{shipment_status}'")
+                
+                return result
+            
+            return {"success": False, "error": response.text}
+            
+        except Exception as e:
+            print(f"❌ Error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+    
+
     def track_shipment(self, shipment_id: str) -> Dict:
         """Track shipment by ID"""
         try:
@@ -553,6 +701,54 @@ class ShiprocketService:
             "estimated_delivery": (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d"),
             "mock": True
         }
+    
+    def generate_invoice(self, shipment_id: str) -> Dict:
+        """Generate invoice for a shipment"""
+        try:
+            if self.debug:
+                return {
+                    "success": False,
+                    "message": "Invoice generation not available in debug mode"
+                }
+            
+            url = f"{self.BASE_URL}/orders/print/invoice"
+            
+            payload = {
+                "ids": [shipment_id]
+            }
+            
+            print(f"📄 Generating invoice for shipment: {shipment_id}")
+            
+            response = requests.post(
+                url,
+                headers=self._get_headers(),
+                json=payload,
+                timeout=30
+            )
+            
+            print(f"📥 Response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("invoice_url"):
+                    return {
+                        "success": True,
+                        "invoice_url": data.get("invoice_url")
+                    }
+            
+            return {
+                "success": False,
+                "message": "Failed to generate invoice",
+                "error": response.text
+            }
+            
+        except Exception as e:
+            print(f"❌ Invoice generation error: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
 # Create singleton instance
 shiprocket_service = ShiprocketService()
