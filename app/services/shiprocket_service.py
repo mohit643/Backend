@@ -464,7 +464,7 @@ class ShiprocketService:
                 print(f"🔧 [DEV MODE] Creating mock shipment for order {order_data.get('order_id')}")
                 return self._create_mock_shipment(order_data.get('order_id', 'TEST'))
             
-            url = f"{self.BASE_URL}/orders/create/adhoc"
+            url = f"{self.BASE_URL}/PURDSI/adhoc"
             
             # ✅ FORMAT PHONE NUMBERS
             shipping_phone = self.format_phone_number(order_data.get("shipping_phone", ""))
