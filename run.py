@@ -28,6 +28,8 @@ app.add_middleware(
         "https://frontend-mocha-three-41.vercel.app",
     
         "http://localhost:5173",
+         "https://www.thepureanddesi.com",
+         "https://frontend-mocha-three-41.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
