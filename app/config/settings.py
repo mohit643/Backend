@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     
     # CORS - Will be parsed from JSON string
     cors_origins: List[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000", "http://localhost:5174"],
+        default=["http://localhost:5173", "http://localhost:3000", "http://localhost:5174","https://www.thepureanddesi.com","https://thepureanddesi.com"],
         env="CORS_ORIGINS"
     )
     
