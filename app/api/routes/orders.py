@@ -166,33 +166,29 @@ async def create_order(
     order_request: CreateOrderRequest, 
     db: Session = Depends(get_db)
 ):
-    """Create a new order with Shiprocket delivery"""
+    """Create a new order and book a real shipment with Shiprocket"""
     try:
-        # --- 1. Calculate and Prepare Financials (No Change) ---
+        # --- 1. Calculate and Prepare Financials ---
         
-        # ✅ Use frontend's calculations if provided
+        # Default weight: Assume 1.0kg per item if actual weight is not available in Pydantic model.
+        total_weight = sum(item.quantity * 1.0 for item in order_request.items)
+        is_cod = order_request.paymentMethod == "cod"
+        
         if order_request.total is not None:
-            print(f"✅ Using frontend's calculated charges:")
-            print(f"   Subtotal: ₹{order_request.subtotal}")
-            print(f"   Shipping: ₹{order_request.shippingCharge}")
-            print(f"   COD: ₹{order_request.codCharge}")
-            print(f"   Total: ₹{order_request.total}")
-            
+            # Case 1: Use charges provided by frontend (Assume they are verified/accurate)
+            print(f"✅ Using frontend's calculated charges. Total: ₹{order_request.total}")
             subtotal = order_request.subtotal
-            shipping_cost = order_request.shippingCharge
-            cod_charge = order_request.codCharge # ✅ NEW: Capture COD charge separately
+            # Note: We must ensure shipping_cost stores BASE charge and cod_charge stores COD charge
+            shipping_cost = order_request.shippingCharge - order_request.codCharge 
+            cod_charge = order_request.codCharge 
             total = order_request.total
-            
         else:
-            # Fallback: Calculate ourselves
-            print("⚠️ Frontend didn't send charges, calculating...")
+            # Case 2: Calculate all charges on the backend (Fallback/Verification)
+            print("⚠️ Frontend didn't send full charges, calculating from backend service...")
             
             subtotal = sum(item.price * item.quantity for item in order_request.items)
-            # ⚠️ FIX 1: Weight calculation should be precise. Assume 1.0kg is the unit weight.
-            total_weight = sum(item.quantity * (item.weight if hasattr(item, 'weight') else 1.0) for item in order_request.items)
-            is_cod = order_request.paymentMethod == "cod"
             
-            # ⚠️ FIX 2: We must use shiprocket_service to calculate shipping (not a local function)
+            # ⚠️ CRITICAL FIX: Use Shiprocket service for real rates
             shipping_calc_result = shiprocket_service.calculate_shipping_charges(
                 pincode=order_request.shippingAddress.pincode,
                 weight=round(total_weight, 3),
@@ -200,53 +196,70 @@ async def create_order(
             )
 
             # Check serviceability from calculation result
-            if shipping_calc_result.get("shipping_charge") is None:
+            if shipping_calc_result.get("shipping_charge") is None and not shipping_calc_result.get("is_serviceable"):
                 raise HTTPException(status_code=400, detail="Shipping service not available for this pincode/weight combination.")
             
-            shipping_cost = shipping_calc_result.get("shipping_charge", 0)
-            cod_charge = shipping_calc_result.get("cod_charge", 0) # ✅ Capture calculated COD charge
-            total = subtotal + shipping_cost + cod_charge # ✅ NEW: Add COD charge to total
+            # The service should return Base Shipping Charge
+            shipping_cost = shipping_calc_result.get("shipping_charge", 0) 
+            cod_charge = shipping_calc_result.get("cod_charge", 0) # Capture calculated COD charge
             
-            print(f"✅ Calculated charges: Shipping ₹{shipping_cost}, COD ₹{cod_charge}, Total ₹{total}")
+            # Total = Subtotal + Base Shipping + COD Charge
+            total = subtotal + shipping_cost + cod_charge 
+            
+            print(f"✅ Calculated charges: Base Shipping ₹{shipping_cost}, COD ₹{cod_charge}, Total ₹{total}")
 
-
-        # --- 2. Database Order Creation (Minor Fixes) ---
+        # --- 2. Database Order Creation (Restored Missing Logic) ---
         
-        # Generate order ID
         order_id_str = generate_order_id()
         
-        # Get or create customer (Logic remains the same)
-        # ... (Customer creation logic is here) ...
+        # Get or create customer
+        customer = db.query(Customer).filter(
+            Customer.phone == order_request.userPhone
+        ).first() if order_request.userPhone else None
 
+        if not customer:
+            customer = Customer(
+                phone=order_request.userPhone or order_request.shippingAddress.phone,
+                email=order_request.shippingAddress.email,
+                full_name=order_request.shippingAddress.fullName
+            )
+            db.add(customer)
+            db.flush() # Flush to get customer.id before committing
+        
         # Create order
         new_order = Order(
             order_id=order_id_str,
             customer_id=customer.id,
             shipping_name=order_request.shippingAddress.fullName,
             shipping_phone=order_request.shippingAddress.phone,
-            # ... (other shipping fields) ...
+            shipping_email=order_request.shippingAddress.email,
+            shipping_address=order_request.shippingAddress.address,
+            shipping_city=order_request.shippingAddress.city,
+            shipping_state=order_request.shippingAddress.state,
             shipping_pincode=order_request.shippingAddress.pincode,
             shipping_landmark=order_request.shippingAddress.landmark,
             subtotal=subtotal,
-            shipping_cost=shipping_cost, # ✅ Now includes only base shipping, not COD
+            shipping_cost=shipping_cost, # Base Shipping Charge
             cod_charges=cod_charge, # ✅ NEW: Save COD charges separately in DB
             total=total,
             payment_method=order_request.paymentMethod,
-            payment_status=PaymentStatus.COD if order_request.paymentMethod == "cod" else PaymentStatus.PENDING,
+            payment_status=PaymentStatus.COD if is_cod else PaymentStatus.PENDING,
             order_status=OrderStatus.CONFIRMED,
             estimated_delivery="3-5 business days"
         )
         
-        # ... (Order and OrderItem creation and commit logic is here) ...
-        
         db.add(new_order)
-        db.commit()
+        db.flush() 
         db.refresh(new_order)
 
+        # Create order items
         for item in order_request.items:
             order_item = OrderItem(
                 order_id=new_order.id,
-                # ... (OrderItem fields) ...
+                product_id=item.productId,
+                product_name=item.productName,
+                product_slug="",
+                product_image="",
                 size=item.size,
                 unit=item.unit,
                 quantity=item.quantity,
@@ -257,58 +270,54 @@ async def create_order(
         
         db.commit()
         db.refresh(new_order)
-
-      
-        # --- 3. Shiprocket Shipment Creation (Key Changes Applied Here) ---
         
-        # ⚠️ CRITICAL FIX 3: All numeric values (price, total, weight) in Shiprocket payload MUST be strings.
-        # Use new_order.items which is the list of DB objects, not order_request.items
+        print(f"✅ DB Order created successfully: {order_id_str}. Proceeding to Shiprocket booking...")
+
+        # --- 3. Shiprocket Shipment Creation (CRITICAL) ---
+        
+        # Prepare Order Items for Shiprocket
         order_items_for_shiprocket = [{
-            "name": item.product_name,
-            # ⚠️ FIX 4: SKU must be unique but simple
-            "sku": f"PD-{item.product_id}", 
+            "name": item.productName,
+            "sku": f"PD-{item.productId}", 
             "units": item.quantity,
-            # ⚠️ FIX 5: Convert prices to STRING
-            "selling_price": str(round(item.price, 2)),
-            "discount": "0", # ✅ Ensure discount is included as "0"
-            "hsn": "4819" # Placeholder HSN/SAC
-        } for item in new_order.items] # ✅ Use items from the newly created DB object (new_order.items)
+            # ⚠️ FIX: Convert prices to STRING
+            "selling_price": str(round(item.price, 2)), 
+            "discount": "0",
+            "hsn": "4819" 
+        } for item in order_request.items] # Use items from the request for the Shiprocket payload
 
-        # ⚠️ FIX 6: Shiprocket requires total_amount to reflect actual COD amount if applicable.
-        # Total Amount = Subtotal + Shipping Cost (Base) + COD Charges
-        final_total_amount_str = str(round(total, 2))
+        # Total Shipping Charges (Base + COD) for the Shiprocket Payload
+        total_shipping_charges = shipping_cost + cod_charge 
         
-        total_weight = sum(item.quantity * 1.0 for item in new_order.items) # Re-calculate weight based on DB items if needed, or use the one calculated above.
-        
-        print("🔄 Preparing payload with WAREHOUSE details for Shiprocket...")
-
         order_data_for_shiprocket = {
             "order_id": order_id_str,
             "order_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             
             # --- START: SHIPPER (PICKUP) DETAILS from settings ---
-            "pickup_location": settings.warehouse_name, # Critical: MUST match the exact name in SR panel
+            "pickup_location": settings.warehouse_name, 
             
             # --- START: CONSIGNEE (DESTINATION) DETAILS from DB object ---
             "billing_customer_name": new_order.shipping_name,
             "billing_email": new_order.shipping_email,
-            "billing_phone": shiprocket_service.format_phone_number(new_order.shipping_phone), # ✅ Use formatter
+            "billing_phone": shiprocket_service.format_phone_number(new_order.shipping_phone), 
             "billing_address": new_order.shipping_address,
             "billing_city": new_order.shipping_city,
             "billing_pincode": new_order.shipping_pincode,
             "billing_state": new_order.shipping_state,
             "billing_country": "India", 
             
-            "shipping_is_billing": True, # Shiprocket will copy billing details to shipping
+            "shipping_is_billing": True, 
             
             "payment_method": order_request.paymentMethod,
-            "sub_total": str(round(subtotal, 2)), # ⚠️ MUST BE STRING
-            "shipping_charges": str(round(shipping_cost + cod_charge, 2)), # ⚠️ CRITICAL: Shiprocket wants Total Charges here (Base Shipping + COD Charges)
-            "total_amount": final_total_amount_str, # ⚠️ MUST BE STRING
+            "sub_total": str(round(subtotal, 2)), 
+            # ⚠️ CRITICAL FIX: Shiprocket wants TOTAL Charges here (Base Shipping + COD Charges)
+            "shipping_charges": str(round(total_shipping_charges, 2)), 
+            # ⚠️ FIX: total_amount MUST BE STRING (Subtotal + Base Shipping + COD Charge)
+            "total_amount": str(round(total, 2)), 
             
             "order_items": order_items_for_shiprocket,
-            "weight": round(total_weight, 3), # Must be in kg (float or int is fine)
-            "length": 15, # ✅ MUST INCLUDE DIMENSIONS
+            "weight": round(total_weight, 3), # In kg
+            "length": 15, 
             "breadth": 15,
             "height": 10,
         }
@@ -319,12 +328,10 @@ async def create_order(
         
         print(f"📦 Shiprocket response: {shipment_result}")
 
-        # --- 4. Handle Shiprocket Response and Update Database (Minor Fixes) ---
+        # --- 4. Handle Shiprocket Response and Update Database ---
         
         if shipment_result.get("success"):
-            # ... (DB Update logic remains the same) ...
-            
-            # Update the Order object with Shiprocket IDs
+            # Success: Update DB with shipment details and Delivery record
             new_order.order_status = OrderStatus.PROCESSING 
             new_order.shiprocket_order_id = shipment_result.get("shiprocket_order_id")
             new_order.shipment_id = shipment_result.get("shipment_id")
@@ -333,8 +340,7 @@ async def create_order(
             new_order.waybill_number = new_order.awb_code
             new_order.courier_name = shipment_result.get("courier_name", "Shiprocket")
             
-            # Create a separate Delivery record (Logic remains the same)
-            # ... (Delivery record creation logic is here) ...
+            # Create a separate Delivery record
             delivery = Delivery(
                 order_id=new_order.id,
                 waybill_number=new_order.waybill_number,
@@ -345,7 +351,7 @@ async def create_order(
                 tracking_url=shipment_result.get("tracking_url", ""),
                 estimated_delivery_date=datetime.utcnow() + timedelta(days=5),
                 weight=total_weight,
-                shipping_charge=shipping_cost + cod_charge # ✅ Save total amount paid for shipping
+                shipping_charge=total_shipping_charges # Total amount paid for shipping
             )
             db.add(delivery)
             
@@ -355,25 +361,28 @@ async def create_order(
             print(f"✅ REAL Shipment created and DB updated. AWB: {new_order.awb_code}")
             
         else:
-            # Shiprocket failed in LIVE mode. Log error and raise exception for the user.
-            new_order.admin_notes = f"Shiprocket Failed (Live): {shipment_result.get('error') or json.dumps(shipment_result)}" # ✅ Better error logging
-            db.commit()
+            # Failure: Log error and raise exception
+            new_order.admin_notes = f"Shiprocket Failed (Live): {shipment_result.get('error') or json.dumps(shipment_result)}" 
+            new_order.order_status = OrderStatus.CONFIRMED # Keep status CONFIRMED
+            db.commit() # Save the failure note
             
             error_detail = shipment_result.get("error", "Shiprocket failed to create shipment.")
             
             print(f"❌ Shiprocket creation failed for Order {order_id_str}. Error: {error_detail}")
+            # Raise exception to inform user immediately
             raise HTTPException(status_code=500, detail=f"Order placed but shipment booking failed. Please retry later or contact support. Error: {error_detail}")
 
-        # --- 5. Final Response (No Change) ---
-        print(f"✅ Order created successfully")
+        # --- 5. Final Response ---
+        print(f"✅ Final response ready.")
         
         return {
             "success": True,
-            "message": "Order created successfully",
+            "message": "Order created successfully and shipment booked.",
             "orderId": order_id_str,
             "total": float(total),
             "subtotal": float(subtotal),
-            "shipping": float(shipping_cost + cod_charge), # ✅ Return total shipping amount to frontend
+            # Return total shipping amount (Base + COD)
+            "shipping": float(total_shipping_charges), 
             "awb_code": new_order.awb_code, 
             "shipmentCreated": True
         }
@@ -384,12 +393,10 @@ async def create_order(
         raise e
     except Exception as e:
         print(f"❌ Error creating order: {type(e).__name__}: {str(e)}")
-        import traceback
         traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail="Internal server error during order creation.")
-    
-    
+
 @router.get("/{order_id}")
 async def get_order(order_id: str, db: Session = Depends(get_db)):
     """Get order by ID with delivery info"""
