@@ -261,13 +261,112 @@ async def create_order(
         
         db.commit()
         db.refresh(new_order)
+
+      
+    #    db.commit()
+    #     db.refresh(new_order)
         
-        # Continue with Shiprocket shipment creation...
-        # (Rest of the function remains the same)
+        # --- 3. Shiprocket Shipment Creation (Using Real Warehouse Details) ---
         
+        # Prepare Order Items for Shiprocket
+        order_items_for_shiprocket = [{
+            "name": item.product_name,
+            "sku": f"PD-{item.product_id}-{item.size}", 
+            "units": item.quantity,
+            "selling_price": item.price,
+            "hsn": "4819" # Placeholder HSN/SAC
+        } for item in new_order.items]
+
+        print("🔄 Preparing payload with WAREHOUSE details for Shiprocket...")
+
+        # Construct the payload using WAREHOUSE settings for the pickup details.
+        order_data_for_shiprocket = {
+            "order_id": order_id_str,
+            "order_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            
+            # --- START: SHIPPER (PICKUP) DETAILS from settings ---
+            # Shiprocket expects an existing 'pickup_location' name. I will use the warehouse name.
+            "pickup_location": settings.warehouse_name, 
+            
+            # Use the shipping address from the order request for the customer (destination)
+            "billing_customer_name": new_order.shipping_name,
+            "billing_email": new_order.shipping_email,
+            "billing_phone": new_order.shipping_phone,
+            "billing_address": new_order.shipping_address,
+            "billing_city": new_order.shipping_city,
+            "billing_pincode": new_order.shipping_pincode,
+            "billing_state": new_order.shipping_state,
+            "billing_country": "India", 
+            
+            "shipping_customer_name": new_order.shipping_name,
+            "shipping_email": new_order.shipping_email,
+            "shipping_phone": new_order.shipping_phone,
+            "shipping_address": new_order.shipping_address,
+            "shipping_city": new_order.shipping_city,
+            "shipping_pincode": new_order.shipping_pincode,
+            "shipping_state": new_order.shipping_state,
+            "shipping_country": "India",
+            
+            "payment_method": order_request.paymentMethod,
+            "sub_total": subtotal,
+            "shipping_charges": shipping_cost,
+            "total_amount": total,
+            "order_items": order_items_for_shiprocket,
+            "weight": round(total_weight, 3), # Must be in kg
+        }
+
+        print("📡 Creating shipment via REAL Shiprocket service...")
+        
+        # Call the actual Shiprocket service because DEBUG=false in .env
+        shipment_result = shiprocket_service.create_shipment(order_data_for_shiprocket)
+        
+        print(f"📦 Shiprocket response: {shipment_result}")
+
+        # --- 4. Handle Shiprocket Response and Update Database ---
+        
+        if shipment_result.get("success"):
+            # Update the Order object with Shiprocket IDs
+            new_order.order_status = OrderStatus.PROCESSING 
+            new_order.shiprocket_order_id = shipment_result.get("shiprocket_order_id")
+            new_order.shipment_id = shipment_result.get("shipment_id")
+            new_order.awb_code = shipment_result.get("awb_code") or shipment_result.get("waybill")
+            new_order.courier_id = shipment_result.get("courier_id")
+            new_order.waybill_number = new_order.awb_code
+            new_order.courier_name = shipment_result.get("courier_name", "Shiprocket")
+            
+            # Create a separate Delivery record
+            delivery = Delivery(
+                order_id=new_order.id,
+                waybill_number=new_order.waybill_number,
+                shipment_id=new_order.shipment_id,
+                current_status="Pickup Scheduled",
+                current_location=settings.warehouse_city,
+                courier_name=new_order.courier_name,
+                tracking_url=shipment_result.get("tracking_url", ""),
+                estimated_delivery_date=datetime.utcnow() + timedelta(days=5),
+                weight=total_weight,
+                shipping_charge=shipping_cost
+            )
+            db.add(delivery)
+
+            db.commit()
+            db.refresh(new_order)
+            
+            print(f"✅ REAL Shipment created and DB updated. AWB: {new_order.awb_code}")
+            
+        else:
+            # Shiprocket failed in LIVE mode. Log error and raise exception for the user.
+            new_order.admin_notes = f"Shiprocket Failed (Live): {json.dumps(shipment_result)}"
+            db.commit()
+            
+            error_detail = shipment_result.get("message", "Shiprocket failed to create shipment.")
+            
+            print(f"❌ Shiprocket creation failed for Order {order_id_str}. Error: {error_detail}")
+            # Raise exception to inform the user that the order was placed but shipment failed (critical).
+            raise HTTPException(status_code=500, detail=f"Order placed but shipment booking failed. Please retry later or contact support. Error: {error_detail}")
+
+        # --- 5. Final Response ---
         print(f"✅ Order created successfully")
-        print(f"   Order ID: {order_id_str}")
-        print(f"   Total: ₹{total}")
         
         return {
             "success": True,
@@ -275,14 +374,20 @@ async def create_order(
             "orderId": order_id_str,
             "total": float(total),
             "subtotal": float(subtotal),
-            "shipping": float(shipping_cost)
+            "shipping": float(shipping_cost),
+            "awb_code": new_order.awb_code, # Return AWB for immediate display
+            "shipmentCreated": True
         }
         
     except Exception as e:
+        # ... (Exception handling remains the same) ...
         print(f"❌ Error creating order: {str(e)}")
         db.rollback()
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        # Ensure that if it's an HTTPException, we re-raise it, otherwise, use a generic error.
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail="Internal server error during order creation.")
 
 
 @router.get("/{order_id}")
