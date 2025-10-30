@@ -209,13 +209,13 @@ async def create_order(
         customer = None
         if order_request.userPhone:
             customer = db.query(Customer).filter(
-                Customer.phone == order_request.userPhone
+               Customer.email == order_request.shippingAddress.email
             ).first()
 
         if not customer:
-            customer_phone = order_request.userPhone or order_request.shippingAddress.phone
+            # customer_phone = order_request.userPhone or order_request.shippingAddress.phone
             customer = Customer(
-                phone=customer_phone,
+                phone=order_request.shippingAddress.phone,
                 email=order_request.shippingAddress.email,
                 full_name=order_request.shippingAddress.fullName
             )
